@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -161,6 +162,34 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	_, _ = io.WriteString(w, err.Error())
 }
 
+func localhostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hostname, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			hostname = r.Host
+		}
+		if hostname != "127.0.0.1" && hostname != "::1" && !strings.EqualFold(hostname, "localhost") {
+			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if origins, present := r.Header["Origin"]; present {
+				if len(origins) != 1 {
+					http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+					return
+				}
+				u, err := url.Parse(origins[0])
+				if err != nil || u.Host != r.Host {
+					http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -230,7 +259,7 @@ func (s *server) routes() http.Handler {
 		w.Header().Set("Content-Disposition", "attachment; filename=\"belltally.csv\"")
 		_, _ = w.Write(tally.ExportCSV(b))
 	})
-	return mux
+	return localhostGuard(mux)
 }
 
 func isOurServer(port int) bool {
